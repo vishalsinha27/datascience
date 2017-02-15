@@ -1,0 +1,252 @@
+---
+title: "Home advantage in Cricket"
+author: "Vishal Sinha"
+date: "9 February 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Synopsis
+This document is an attempt to quantify the home advantage for a Men's cricket team in one day international(ODI) matches. It is based on 1306 ODIs matches data downloaded from http://cricsheet.org/downloads/. The script gets the win percent in home matches and away for each team and then draws bar-plot for it. Check the summary section for inferences. 
+
+#Data Processing
+The data present at the cricsheet.org is in yaml file. I will first dowwnload the data, read the yaml file and convert it in a format suitable for formatting.
+
+```{r tidy=TRUE, warning=FALSE, message=FALSE}
+require("dplyr")
+require("yaml")
+require("ggplot2")
+require("ggthemes")
+require("extrafont")
+require("scales")
+
+````
+
+```{r tidy=TRUE}
+
+
+fileName <- "odis_male.zip"
+dataDir = "data"
+dataUrl = "http://cricsheet.org/downloads/odis_male.zip"
+if (!file.exists(dataDir)) {
+dir.create(dataDir, showWarnings = FALSE)
+
+download.file(dataUrl,
+destfile = paste(dataDir, fileName, sep = "/"),
+mode = "wb"
+)
+dateDownloaded <- date()
+unzip(file, exdir = dataDir)
+
+}
+
+
+
+```
+
+Read all the yaml files and retrieve the required data from it. 
+Here are the steps.
+
+1. Read the yaml file
+
+2. Retrieve the followings...
+
+   + which team won the toss.
+   
+   + which team won the match.
+   
+   + winning margin
+   
+   + match venue and city. 
+   
+3. Create a data frame for this data. Each file will have 2 lines in the data frame. One for the winning team and the other for the losing team.
+
+ 
+
+```{r tidy=TRUE}
+#Id for each match
+matchid = 1
+index = 0
+
+#declare the data frame.
+df = data.frame(matchid = integer(0), fileName=character(0),date = as.Date(character()),team=character(0), opponent = character(0), won=numeric(0), wonToss = numeric(0), description = character(0), venue=character(0), city=character(0) ,stringsAsFactors=FALSE)
+
+#Matches for only these teams are analyzed. 
+selectedTeams = c("Australia", "England", "India","New Zealand", "Pakistan", "South Africa",
+                  "Sri Lanka","West Indies")
+
+#Read all the files
+for(file in list.files(dataDir,pattern = "\\.yaml$")) {
+  
+  l = yaml.load_file(paste(dataDir,file, sep = "/"))
+  
+  #For each file, compute the winner, tosswinner, loser, date and location. 
+  tosswinner = l$info$toss$winner
+  winner = l$info$outcome$winner
+  isWinnerSameAsTossWinner = winner == tosswinner
+  date = l$info$dates
+  if(length(date)>1) {
+    date = date[1]
+  }
+  venue = l$info$venue
+  city = l$info$city
+  if(is.null(city)) {
+    city = NA
+  }
+  teams = l$info$teams
+  
+  # discard the no result match. 
+  if(!is.null(winner)) {
+    winnerIndex = match(winner, teams)
+    if(winnerIndex == 1) {
+      loser = teams[2]
+    } else {
+      loser = teams[1]
+    }
+    
+    if(!is.na(match(winner, selectedTeams)) && !is.na(match(loser, selectedTeams)))
+    {
+      winnerDescription  = paste("won by", l$info$outcome$by)
+      loserDescription = paste("lost by", l$info$outcome$by)
+     
+      # Add a winner row in the data frame 
+      winnerRow = c(matchid,file,date,winner, loser, 1, as.integer(isWinnerSameAsTossWinner), winnerDescription, venue, city)
+      # Add a loser row in the data frame
+      loserRow = c(matchid, file,date, loser,winner, 0, as.integer(!isWinnerSameAsTossWinner), loserDescription, venue, city)
+
+      #increase the required indexes.
+      index = index +1
+      df[index, ] = winnerRow
+      index = index+1
+      
+      df[index,] = loserRow
+      matchid = matchid+1
+      
+    }
+    
+  } 
+  
+}
+```
+
+Copy the file "venues.csv" available at github.com to the source folder location.
+This file does the mapping between the stadium name, city and the country. 
+
+
+
+```{r tidy=TRUE}
+stadiumMapping  = read.csv2("venues.csv")
+fullname = paste(df$venue,df$city, sep = ", ")
+isHomeMatch = rep(0, nrow(df))
+i = 1
+for(name in fullname) {
+  index = grep(name, stadiumMapping$x)
+  matchCountry =  stadiumMapping$y[index]
+  isHomeMatch[i] = matchCountry == df$team[i]
+  i = i+1
+  
+}
+# boolean flag if the match is played at home of the first team. 
+df[,"isHomeMatch"] = isHomeMatch
+
+
+
+```
+View the resulting data frame.
+```{r tidy=TRUE}
+head(df)
+```
+
+Select the appropriate data to plot.
+```{r tidy=TRUE}
+
+selected_df = select(df, team, opponent, won, wonToss,isHomeMatch)
+selected_df$won = as.integer(selected_df$won)
+selected_df$wonToss = as.integer(selected_df$wonToss)
+selected_df$isHomeMatch = as.integer(selected_df$isHomeMatch)
+
+homewin = selected_df %>%
+  filter(isHomeMatch==1) %>%
+group_by(team,opponent) %>%
+  summarise(won = sum(won), 
+            total = sum(isHomeMatch)) %>%
+  mutate(percent = (won / total)*100) %>%
+  
+  arrange(team,  opponent)
+
+outsidewin = selected_df %>%
+  filter(isHomeMatch==0) %>%
+  group_by(team,opponent) %>%
+  summarise(won = sum(won), 
+            total = n()) %>%
+  mutate(percent = (won / total)*100) %>%
+  arrange(team,  opponent)
+```
+
+
+
+
+#Plots
+
+In the graphs below, The win percent is shown for each country against other countries. The blue bar shows the win percent for the country in home matches and the yellow bar shows the same in away matches. The graphs also displays in bracket the number of odis played between 2 countries from March 2006 to Jan 2017. 
+Note that if a match is played at a neutral location then it is treated as away match for both countries.
+
+```{r tidy=TRUE}
+splittedData = split(homewin, homewin$team)
+splittedDataOUtsideWin = split(outsidewin, outsidewin$team)
+fill = c("#5F9EA0", "#E1B378")
+
+for(country in selectedTeams) {
+  cdt = splittedData[country] 
+  coutside = splittedDataOUtsideWin[country]
+  title = paste(country, "vs Rest")
+
+
+  dat1 = data.frame("type" = "Home", "percent" =cdt[[1]]$percent, "opponent"=cdt[[1]]$opponent, "total"=cdt[[1]]$total)
+  dat2 = data.frame("type" = "Outside", "percent" =coutside[[1]]$percent, "opponent"=coutside[[1]]$opponent,
+                    "total"=coutside[[1]]$total)
+  dat = rbind(dat1, dat2)
+  
+  p4 = ggplot() + theme_bw() +
+         geom_bar(aes(y = percent, x = opponent, 
+                                fill = type), data = dat,
+                            stat="identity")
+  p4 = p4 + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  
+  p4 = p4 + geom_text(data=dat, aes(x = opponent, y = percent, label = paste0(round(percent,2),"%"," (",total,")")),
+                       size=3)
+  
+  p4 = p4+ theme(legend.position="bottom", legend.direction="horizontal", legend.title = element_blank())
+  
+  p4 = p4 + ggtitle(title) + labs(y = "Win percent") +  
+    scale_y_continuous(labels = dollar_format(suffix = "%", prefix = "")) 
+  p4 <- p4 + scale_fill_manual(values=fill)
+  print(p4)
+
+}
+
+
+```
+
+
+#Summary
+
+
+1. Australia have not lost a single match of the last 9 matches at home against West Indies
+
+2. India win percent almost doubles against New Zealand and England at home.
+
+3. India plays well against Srilanka whether at home or away. They win more than 50% of their matches at any location against Srilanka
+
+4. New Zealand does not play well in Australia. They won only 11.11% of their last 18 matches. 
+
+5. England performs well against Pakistan at all location.  
+
+
+*Disclaimer: The above data and analysis must be used only for tutorial purpose.*
+
+
+
+
