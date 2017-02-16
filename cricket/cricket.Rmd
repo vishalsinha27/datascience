@@ -19,7 +19,6 @@ require("dplyr")
 require("yaml")
 require("ggplot2")
 require("ggthemes")
-require("extrafont")
 require("scales")
 
 ````
@@ -27,8 +26,10 @@ require("scales")
 ```{r tidy=TRUE}
 
 
-fileName <- "odis_male.zip"
+fileName = "odis_male.zip"
+venue = "venues.csv"
 dataDir = "data"
+venuesCSVUrl = "https://github.com/vishalsinha27/datascience/blob/master/cricket/venues.csv"
 dataUrl = "http://cricsheet.org/downloads/odis_male.zip"
 if (!file.exists(dataDir)) {
 dir.create(dataDir, showWarnings = FALSE)
@@ -37,10 +38,17 @@ download.file(dataUrl,
 destfile = paste(dataDir, fileName, sep = "/"),
 mode = "wb"
 )
+
+download.file(venuesCSVUrl,
+destfile = paste(dataDir, "venues.csv", sep = "/"),
+mode = "wb"
+)
 dateDownloaded <- date()
-unzip(file, exdir = dataDir)
+unzip(paste(dataDir,fileName, sep = "/"), exdir = dataDir)
+
 
 }
+mapping  = read.csv2(paste(dataDir,"venues.csv", sep = "/"))
 
 
 
