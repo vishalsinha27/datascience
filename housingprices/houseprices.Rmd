@@ -1,0 +1,355 @@
+---
+title: "HousePrices"
+author: "Vishal Sinha"
+date: "16 February 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Utility Functions
+
+```{r tidy=TRUE, warning=FALSE, message=FALSE}
+
+require(caret)
+require(dplyr)
+require(Cubist)
+require(data.table)
+require(Hmisc)
+require(mice)
+
+
+# remove list of columns from the data table. 
+removeColumns = function(data, remove) {
+  allCols = names(data)
+  selectedCol = setdiff(allCols,remove)
+  return(data[,selectedCol])
+}
+
+
+# Get the list of categorical columns.
+
+getCategoricalCols = function(data) {
+  cat = c()
+  totrows = nrow(data)
+  for (colname in names(data)) {
+    if(!is.numeric(data[,colname])) {
+      # it is not a numeric variable so it has to be categorical
+      cat = append(cat,colname)
+    } 
+   
+  }
+  return(cat)
+}
+
+#Draw feature plot for the data. Removes the outcome columns from the plot.
+drawFeaturePlot = function(data, outcome) {
+  xData = removeColumns(data, outcome)
+  featurePlot(x=xData, y=data[,outcome],between = list(x=1,y=1), type=c("g","p","smooth"))
+}
+
+# Check if there is a high correlation among columns. Returns the list of highly correlated columns. 
+
+findHigherCorrCols = function(data, cutoff = 0.8,outcome) {
+  correlations = cor(removeColumns(data, outcome))
+  highcor = findCorrelation(correlations,cutoff = cutoff)
+  return(highcor)
+}
+
+# Get the categorical columns which does not the effect the outcome variable
+#The outcomevariable is a continuous variable. Uses the Anonva test to 
+# check if the categorical variable is dependent or not. 
+getIgnoreableCategoricalCols = function(data, outcome,pcutoff = 0.05)  {
+  removeCol = c()
+  for(colName in names(data)) {
+    if(!is.numeric(data[,colName]) && outcome!=colName) {
+      daf2 <- data.frame (A = data[,colName], B=data[,outcome])
+      colnames(daf2)<-c("input", "output")
+      
+      s1 = summary(aov(output~input, data=daf2))
+
+      us1 = unlist(s1)
+      attributes(us1)= NULL
+      pval = us1[9]
+      
+      
+      if(pval>pcutoff) {
+      
+        removeCol = append(removeCol,colName)
+      }
+    }
+  }
+  return(removeCol)
+  
+}
+
+#Get the correlated categorical columns. 
+# Uses Chi-square test to find out the categorical cols. 
+getCorrelatedCatCols = function(data,pcutoff = 0.05)  {
+  cols = names(data)
+  corCols = c()
+  n = length(cols)
+  for(i in 1:(n-1)) {
+    if(!(cols[i] %in% corCols)) {
+      for(j in (i+1):n) {
+        if(!(cols[j] %in% corCols)) {
+          
+          s = chisq.test(data[,cols[i]], data[,cols[j]])
+          p = s$p.value
+          if(p<pcutoff) {
+            #NUll hypothesis is rejected...
+            corCols = append(corCols, cols[j])
+          }
+          
+        }
+      }
+    }
+    
+  }
+  return(corCols)
+}
+
+
+# get the number of NAs in each column in data set 
+getNAsStatus = function(data) {
+  cols = c()
+  val = c()
+  for(col in names(data)) {
+    s = sum(is.na(data[,col]))
+    if(s>0) {
+      cols = append(cols, col)
+      val = append(val,s)
+    }
+  }
+  df = data.frame("columns" = cols, "Number" = val)
+  return(df)
+}
+
+
+# Replace the NAs with mean. Will work only if the data frame contains numberical values.
+
+replaceNAsWithMean = function(data) {
+  df = getNAsStatus(data)
+  if(nrow(df) == 0) {
+    return(data)
+  }
+  for(d in df[,"columns"]) {
+    data[is.na(data[,d]),d] = mean(data[,d], na.rm=TRUE)
+  }
+  return(data)
+}
+
+# Set the default valye to NAs.
+markNAasDef = function(data, cols, def = 0) {
+  for( c in cols) {
+    data[is.na(data[,c]),c] = def
+    
+  }
+  return(data)
+}
+
+# get the mode.
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+
+#build a lassoModel
+lassoModel = function(data, formula) {
+  set.seed(100)
+  ctrl = trainControl(method = "cv", number = 10)
+  enetGrid = expand.grid(.lambda = c(0,0.01, .1), .fraction = seq(.05,0.1,length = 20))
+  lasso = train(formula, data= data, method="enet", tuneGrid = enetGrid, trControl = ctrl)
+}
+
+
+#build a neural network model.
+
+nnModel = function(x, y) {
+  nnetGrid  = expand.grid(.decay=c(0,0.01,.1),.size=c(1:10),.bag=FALSE)
+  ctrl = trainControl(method = "cv", number = 10)
+  
+  nnetTune = train(x,y, method = "avNNet", tuneGrid = nnetGrid, trControl = ctrl,
+                   preProc = c("center", "scale"), linout = TRUE,
+                   trace = FALSE, MaxNWts = 10*(ncol(x) +1)+10+1, maxit =500)
+  
+}
+
+# Cubist model
+
+cubistModel = function(data, formula) {
+  cubistGrid = expand.grid(committees = c(100),
+                           neighbors=c(9))
+  ctrl = trainControl(method = "cv")
+  model.cubist <- train(SalePrice~., data=data,method="cubist",
+                        verbose=TRUE,
+                        metric="Rsquared",
+                        tuneGrid = cubistGrid,
+                        trControl = ctrl)
+  
+}
+
+
+```
+
+
+# Explore the data
+
+ load the libraries.
+ 
+
+
+
+
+Load the data.
+
+```{r tidy=TRUE}
+set.seed(1)
+testFile <- "test.csv"
+input <- "train.csv"
+allData <- read.csv(input, header = TRUE, stringsAsFactors = FALSE)
+testData <- read.csv(testFile, header = TRUE,stringsAsFactors = FALSE)
+
+
+
+```
+Check the data dimension. There are 1460 rows and 78 columms.
+
+```{r tidy=TRUE}
+dim(allData)
+
+```
+
+Get the NA status for each columns
+```{r tidy=TRUE}
+getNAsStatus(allData)
+
+```
+The columns Alley and Fence are mostly null. Id is not required for analysis. Remove these three columns.
+```{r tidy=TRUE}
+allData = removeColumns(allData, c("Id", "Alley", "Fence", "FireplaceQu"))
+
+```
+
+Check the data summary.
+```{r tidy=TRUE}
+describe(allData)
+
+```
+
+Divide the training data in numerical and categorical variable
+
+```{r tidy=TRUE}
+
+catCols = getCategoricalCols(allData)
+
+catData = allData[,catCols]
+numData = removeColumns(allData, catCols)
+
+```
+For the numerical data, do the following
+
+1. Replace NAs with the mean for that column
+
+2. Remove the SalePrice column
+
+3. Check for correlation between the dependent variables
+
+4. Remove the highly correlated data
+
+5. Check the importance of each varibale.
+
+6. Select the columns which effects the outcome variable by 1% or more. 
+
+
+
+```{r}
+t1 = replaceNAsWithMean(numData)
+t1 = removeColumns(t1, "SalePrice")
+
+correlations = cor(t1)
+highcor = findCorrelation(correlations,cutoff = 0.8)
+rmcols = names(t1)[highcor]
+numData = removeColumns(numData, rmcols)
+
+
+loessResults = filterVarImp(x = removeColumns(numData,c("SalePrice")), y=numData$SalePrice,
+                              nonpara = TRUE)
+
+loessResults$rows = rownames(loessResults)
+rownames(loessResults) = NULL
+selected = loessResults[loessResults$Overall>0.01,]
+numData = numData[,selected$rows]
+
+```
+
+For Categorical columns do the following...
+
+1. Get the coloumns which does not affect the SalePrice
+2. Remove those columns
+3. Get the categorical correlated columns using chi-square test
+4. Remove the correlated columns.
+
+```{r message=FALSE, warning=FALSE, results="hide"}
+t2 = catData
+t2$SalePrice = allData$SalePrice
+
+dependentCols = getIgnoreableCategoricalCols(t2, "SalePrice")
+catData = removeColumns(catData, dependentCols)
+# Check for correlation between variables.
+corCols = getCorrelatedCatCols(catData,0.0005)
+catData = removeColumns(catData,corCols)
+
+```
+Merge the numerical and categorical data. Select the required columns in test Data.
+
+```{r}
+mergedData = cbind(numData,catData)
+selectedCols = names(mergedData)
+selectedCols = selectedCols[!selectedCols %in% c("SalePrice")]
+# add the Id col
+selectedCols = append("Id",  selectedCols)
+testData = testData[,selectedCols]
+
+```
+
+Check the pattern of missing data.
+
+
+Replace the missing data using mice package. This will work only
+
+```{r  message=FALSE, results="hide", warning=FALSE}
+tempData <- mice(mergedData,m=1,maxit=10,method='rf',seed=5000)
+completedMergedData <- complete(tempData,1)
+tempData <- mice(testData,m=1,maxit=10,method='pmm',seed=5000)
+completedTestData <- complete(tempData,1)
+
+```
+
+Correct the test data and merged data. MSZoning is replaced with 
+``` {r}
+completedTestData[completedTestData$GarageYrBlt == 2207,"GarageYrBlt"] = 2007
+completedMergedData[is.na(completedMergedData$BsmtFinType2),"BsmtFinType2"] = "None"
+completedTestData[is.na(completedTestData$BsmtFinType2),"BsmtFinType2"] = "None"
+
+modeMSZoning = getmode(completedTestData[!is.na(completedTestData$MSZoning),"MSZoning"])
+completedTestData[is.na(completedTestData$MSZoning),"MSZoning"] = modeMSZoning
+completedMergedData$SalePrice = allData$SalePrice
+
+```
+
+
+
+Predict the data using Cubist
+```{r}
+model.cubist = cubistModel(completedMergedData, formula)
+cubistSalePrice = predict(model.cubist, completedMergedData,neighbors=9,committees=100)
+RMSE.cubist = sqrt(mean((log(completedMergedData$SalePrice) - log(cubistSalePrice))^2))
+RMSE.cubist
+```
+
